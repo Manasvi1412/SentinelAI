@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block title %}Incidents{% endblock %}
+{% block page_title %}Incident Management{% endblock %}
+{% block page_sub %}Grouped threats by attacker IP with full timeline{% endblock %}
+{% set active = 'incidents' %}
+
+{% block content %}
+<div class="row2">
+  <!-- Incident list -->
+  <div>
+    <div class="panel">
+      <div class="panel-head">
+        <div class="panel-title"><i class="fas fa-folder-open"></i> Active Incidents</div>
+        <button class="btn-icon" onclick="loadIncidents()"><i class="fas fa-sync-alt"></i></button>
+      </div>
+      <div class="panel-body" id="incident-list">
+        <div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading...</p></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Incident detail -->
+  <div>
+    <div class="panel" id="incident-detail" style="display:none;">
+      <div class="panel-head">
+        <div class="panel-title"><i class="fas fa-crosshairs"></i> Incident Detail</div>
+        <button class="btn btn-sm btn-resolve" id="resolve-inc-btn" onclick="resolveIncident()"><i class="fas fa-check-double"></i> Resolve All</button>
+      </div>
+      <div class="panel-body" id="incident-detail-body"></div>
+    </div>
+    <div id="inc-placeholder" class="panel">
+      <div class="panel-body">
+        <div class="empty-state" style="padding:60px 20px;">
+          <i class="fas fa-crosshairs"></i>
+          <p>Select an incident to view full details and timeline</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block page_js %}
+<script>
+let currentIncidentAlerts = [];
+
+async function loadIncidents() {
+  const alerts = await fetch('/api/alerts?resolved=false&limit=500').then(r=>r.json());
+
+  // Group by source_ip
+  const byIP = {};
+  alerts.forEach(a => {
+    if (!byIP[a.source_ip]) byIP[a.source_ip] = [];
+    byIP[a.source_ip].push(a);
+  });
+
+  // Sort by count desc
+  const sorted = Object.entries(byIP).sort((a,b) => b[1].length - a[1].length);
+  const el = document.getElementById('incident-list');
+
+  if (!sorted.length) {
+    el.innerHTML = '<div class="empty-state"><i class="fas fa-shield-alt"></i><p>No active incidents.</p></div>';
+    return;
+  }
+
+  el.innerHTML = sorted.map(([ip, ips]) => {
+    const topSev = ips.find(a=>a.severity==='CRITICAL') ? 'CRITICAL'
+                 : ips.find(a=>a.severity==='HIGH')     ? 'HIGH'
+                 : ips.find(a=>a.severity==='MEDIUM')   ? 'MEDIUM' : 'LOW';
+    const types = [...new Set(ips.map(a=>typeLabel(a.alert_type)))].slice(0,3).join(', ');
+    const latest = ips[0].timestamp;
+    return `
+      <div class="alert-row" style="cursor:pointer;padding:14px;border-radius:8px;margin-bottom:6px;background:var(--card2);border:1px solid var(--border);"
+           onclick="showIncident('${ip}')">
+        <div class="alert-icon-wrap icon-red"><i class="fas fa-crosshairs"></i></div>
+        <div class="alert-info">
+          <div class="alert-tags">
+            ${sevBadge(topSev)}
+            <span class="mono" style="color:var(--accent);font-size:12px;">${ip}</span>
+          </div>
+          <div style="font-size:12px;color:var(--muted);margin:3px 0;">${types}</div>
+          <div class="alert-meta">${ips.length} alert(s) · Last: ${latest}</div>
+        </div>
+        <span class="sev sev-${topSev}" style="font-size:18px;font-family:var(--mono);">${ips.length}</span>
+      </div>`;
+  }).join('');
+}
+
+async function showIncident(ip) {
+  const alerts = await fetch('/api/alerts?resolved=false&limit=500').then(r=>r.json());
+  currentIncidentAlerts = alerts.filter(a => a.source_ip === ip);
+
+  document.getElementById('inc-placeholder').style.display = 'none';
+  document.getElementById('incident-detail').style.display = 'block';
+  document.getElementById('resolve-inc-btn').dataset.ip = ip;
+
+  const body = document.getElementById('incident-detail-body');
+  body.innerHTML = `
+    <div style="margin-bottom:20px;">
+      <div style="font-family:var(--mono);font-size:18px;color:var(--accent);margin-bottom:8px;">${ip}</div>
+      <div style="font-size:12px;color:var(--muted);">${currentIncidentAlerts.length} active alerts · First seen: ${currentIncidentAlerts[currentIncidentAlerts.length-1]?.timestamp}</div>
+    </div>
+
+    <div class="ai-label" style="margin-bottom:10px;">Attack Timeline</div>
+    ${currentIncidentAlerts.map(a => `
+      <div style="display:flex;gap:10px;margin-bottom:12px;padding-left:12px;border-left:2px solid ${a.severity==='CRITICAL'?'var(--danger)':a.severity==='HIGH'?'var(--warn)':'var(--accent)'};">
+        <div>
+          <div class="alert-tags">${sevBadge(a.severity)} <span style="font-size:12px;font-weight:600;">${typeLabel(a.alert_type)}</span> ${mitreB(a.mitre_id, a.mitre_technique)}</div>
+          <div style="font-size:12px;margin:4px 0;">${a.description}</div>
+          <div class="alert-meta">${a.timestamp}</div>
+        </div>
+        <button class="btn btn-sm btn-analyze" style="margin-left:auto;flex-shrink:0;" onclick="analyzeOne(${a.id})">🤖 AI</button>
+      </div>`).join('')}
+
+    <div id="inc-ai-panel" class="ai-panel" style="margin-top:16px;"></div>`;
+}
+
+async function resolveIncident() {
+  const ids = currentIncidentAlerts.map(a=>a.id);
+  await fetch('/api/alerts/bulk-resolve', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids})});
+  toast(`${ids.length} alerts resolved`, 'ok');
+  document.getElementById('incident-detail').style.display = 'none';
+  document.getElementById('inc-placeholder').style.display = 'block';
+  loadIncidents();
+  updateSidebarBadge();
+}
+
+async function analyzeOne(id) {
+  const p = document.getElementById('inc-ai-panel');
+  p.className = 'ai-panel show';
+  p.innerHTML = '<div style="text-align:center;padding:20px;color:var(--muted)"><i class="fas fa-circle-notch fa-spin" style="display:block;font-size:22px;margin-bottom:10px;"></i>Analyzing with AI...</div>';
+  const d = await fetch(`/api/alerts/${id}/analyze`).then(r=>r.json());
+  p.innerHTML = `
+    <div class="ai-panel-header"><span style="font-size:20px;">🤖</span>
+      <div><div style="font-weight:700;color:#9b93ff;">AI Analysis</div>
+      <div style="font-size:10px;color:var(--muted);">${d.source==='gemini'?'✦ Gemini':'Rule-based'}</div></div>
+    </div>
+    <div class="ai-label">Summary</div><div class="ai-value">${d.summary}</div>
+    <div class="ai-label">Risk</div><div class="ai-value" style="color:var(--warn);">${d.risk}</div>
+    <div class="ai-label" style="margin-bottom:8px;">Actions</div>
+    ${d.actions.map((a,i)=>`<div class="ai-action"><span class="ai-action-num">${i+1}</span><span>${a}</span></div>`).join('')}
+    <div style="margin-top:12px;"><a href="${d.mitre_url}" target="_blank" style="font-size:11px;color:#9b93ff;">View MITRE ATT&CK →</a></div>`;
+}
+
+loadIncidents();
+setInterval(loadIncidents, 15000);
+</script>
+{% endblock %}

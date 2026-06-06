@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Live Logs{% endblock %}
+{% block page_title %}Live Log Stream{% endblock %}
+{% block page_sub %}Real-time ingested events from all sources{% endblock %}
+{% set active = 'logs' %}
+
+{% block content %}
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;gap:12px;flex-wrap:wrap;">
+  <div class="filter-bar">
+    <button class="filter-btn active" onclick="setTypeFilter('all',this)">All</button>
+    <button class="filter-btn" onclick="setTypeFilter('ssh_login',this)">SSH Login</button>
+    <button class="filter-btn" onclick="setTypeFilter('web_request',this)">Web Request</button>
+    <button class="filter-btn" onclick="setTypeFilter('port_scan',this)">Port Scan</button>
+    <button class="filter-btn" onclick="setTypeFilter('sudo_attempt',this)">Sudo</button>
+    <button class="filter-btn" onclick="setTypeFilter('data_transfer',this)">Data Transfer</button>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;">
+    <label style="font-size:12px;color:var(--muted);">Limit:</label>
+    <select id="log-limit" class="inp" style="width:80px;padding:5px 8px;" onchange="loadLogs()">
+      <option value="50">50</option>
+      <option value="100" selected>100</option>
+      <option value="250">250</option>
+    </select>
+    <button class="btn" onclick="loadLogs()"><i class="fas fa-sync-alt"></i> Refresh</button>
+    <button class="btn btn-primary" id="auto-btn" onclick="toggleAuto()"><i class="fas fa-play"></i> Auto</button>
+  </div>
+</div>
+
+<!-- Stats strip -->
+<div class="stat-grid mb-4" style="grid-template-columns:repeat(5,1fr);">
+  <div class="stat-card c-blue"><div class="stat-val" id="ls-total">—</div><div class="stat-label">Total</div></div>
+  <div class="stat-card c-green"><div class="stat-val" id="ls-success">—</div><div class="stat-label">Success</div></div>
+  <div class="stat-card c-red"><div class="stat-val" id="ls-failed">—</div><div class="stat-label">Failed</div></div>
+  <div class="stat-card c-warn"><div class="stat-val" id="ls-ssh">—</div><div class="stat-label">SSH</div></div>
+  <div class="stat-card c-purple"><div class="stat-val" id="ls-web">—</div><div class="stat-label">Web</div></div>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <div class="panel-title"><i class="fas fa-stream"></i> Event Stream</div>
+    <span id="log-count" style="font-size:11px;color:var(--muted);font-family:var(--mono);"></span>
+  </div>
+  <div class="panel-body" style="padding:0;">
+    <div style="display:grid;grid-template-columns:140px 120px 90px 75px 75px 1fr;gap:8px;padding:10px 20px;border-bottom:1px solid var(--border);font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-family:var(--mono);">
+      <span>Source IP</span><span>Event Type</span><span>Username</span><span>Status</span><span>Time</span><span>Raw Log</span>
+    </div>
+    <div id="log-body" style="max-height:600px;overflow:auto;"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block page_js %}
+<script>
+let typeFilter = 'all';
+let autoInterval = null;
+
+function setTypeFilter(f, btn) {
+  typeFilter = f;
+  document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  loadLogs();
+}
+function toggleAuto() {
+  if (autoInterval) {
+    clearInterval(autoInterval);
+    autoInterval = null;
+    document.getElementById('auto-btn').innerHTML = '<i class="fas fa-play"></i> Auto';
+    document.getElementById('auto-btn').classList.remove('btn-primary');
+  } else {
+    autoInterval = setInterval(loadLogs, 3000);
+    document.getElementById('auto-btn').innerHTML = '<i class="fas fa-stop"></i> Stop';
+    document.getElementById('auto-btn').classList.add('btn-primary');
+    toast('Auto-refresh every 3s', 'ok');
+  }
+}
+
+async function loadLogs() {
+  const limit = document.getElementById('log-limit').value;
+  const logs = await fetch(`/api/logs?limit=${limit}`).then(r=>r.json());
+
+  const filtered = typeFilter === 'all' ? logs : logs.filter(l=>l.event_type===typeFilter);
+  document.getElementById('log-count').textContent = `${filtered.length} entries`;
+
+  // Stats
+  document.getElementById('ls-total').textContent = logs.length;
+  document.getElementById('ls-success').textContent = logs.filter(l=>l.status==='success').length;
+  document.getElementById('ls-failed').textContent = logs.filter(l=>l.status==='failed').length;
+  document.getElementById('ls-ssh').textContent = logs.filter(l=>l.event_type==='ssh_login').length;
+  document.getElementById('ls-web').textContent = logs.filter(l=>l.event_type==='web_request').length;
+
+  const el = document.getElementById('log-body');
+  if (!filtered.length) {
+    el.innerHTML = '<div class="empty-state"><i class="fas fa-stream"></i><p>No logs match the current filter.</p></div>';
+    return;
+  }
+  el.innerHTML = filtered.map(l => `
+    <div style="display:grid;grid-template-columns:140px 120px 90px 75px 75px 1fr;gap:8px;padding:8px 20px;border-bottom:1px solid rgba(30,42,56,0.5);font-size:11px;align-items:center;" class="log-hover">
+      <span class="mono" style="color:var(--accent);">${l.source_ip}</span>
+      <span class="mono" style="color:var(--muted);">${l.event_type}</span>
+      <span class="mono" style="color:#9b93ff;">${l.username||'-'}</span>
+      <span class="mono ${l.status==='success'?'text-success':'text-danger'}">${l.status.toUpperCase()}</span>
+      <span class="mono" style="color:var(--muted2);">${l.timestamp.split(' ')[1]}</span>
+      <span class="mono" style="color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;">${l.raw_log||'-'}</span>
+    </div>`).join('');
+}
+
+loadLogs();
+</script>
+<style>.log-hover:hover{background:rgba(255,255,255,0.015);}</style>
+{% endblock %}

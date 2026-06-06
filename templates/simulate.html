@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}Simulate{% endblock %}
+{% block page_title %}Attack Simulator{% endblock %}
+{% block page_sub %}Inject synthetic attack scenarios to test detection engine{% endblock %}
+{% set active = 'simulate' %}
+
+{% block content %}
+<!-- Output panel -->
+<div class="panel mb-4" id="sim-output" style="display:none;">
+  <div class="panel-head">
+    <div class="panel-title"><i class="fas fa-terminal"></i> Simulation Output</div>
+    <button class="btn-icon" onclick="document.getElementById('sim-output').style.display='none'">✕</button>
+  </div>
+  <div class="panel-body" id="sim-output-body"></div>
+</div>
+
+<!-- Attack cards -->
+<div class="sim-grid">
+
+  <div class="sim-card" onclick="runSim('brute_force',this)">
+    <div class="sim-emoji">🔓</div>
+    <div class="sim-name">Brute Force</div>
+    <div class="sim-desc">Simulate SSH credential stuffing — 8–20 failed login attempts from an attack IP in rapid succession.</div>
+    <div class="sim-mitre">MITRE T1110 · Credential Access</div>
+  </div>
+
+  <div class="sim-card" onclick="runSim('port_scan',this)">
+    <div class="sim-emoji">🔍</div>
+    <div class="sim-name">Port Scan</div>
+    <div class="sim-desc">Simulate network reconnaissance — attacker probing 20 ports to map exposed services before exploitation.</div>
+    <div class="sim-mitre">MITRE T1046 · Discovery</div>
+  </div>
+
+  <div class="sim-card" onclick="runSim('malware',this)">
+    <div class="sim-emoji">☠️</div>
+    <div class="sim-name">Malware C2</div>
+    <div class="sim-desc">Simulate C2 beaconing from a known malicious IP in the IOC database — active malware infection.</div>
+    <div class="sim-mitre">MITRE T1071 · Command & Control</div>
+  </div>
+
+  <div class="sim-card" onclick="runSim('sql_injection',this)">
+    <div class="sim-emoji">💉</div>
+    <div class="sim-name">SQL Injection</div>
+    <div class="sim-desc">Simulate SQLi payload in web request — UNION SELECT, OR 1=1, DROP TABLE patterns in URL/body.</div>
+    <div class="sim-mitre">MITRE T1190 · Initial Access</div>
+  </div>
+
+  <div class="sim-card" onclick="runSim('xss',this)">
+    <div class="sim-emoji">📜</div>
+    <div class="sim-name">XSS Attack</div>
+    <div class="sim-desc">Simulate cross-site scripting — &lt;script&gt;, onerror=, document.cookie payloads in web request.</div>
+    <div class="sim-mitre">MITRE T1059.007 · Execution</div>
+  </div>
+
+  <div class="sim-card" onclick="runSim('privilege_escalation',this)">
+    <div class="sim-emoji">⬆️</div>
+    <div class="sim-name">Privilege Escalation</div>
+    <div class="sim-desc">Simulate low-privilege user running sudo su, chmod +s, or editing /etc/sudoers to gain root.</div>
+    <div class="sim-mitre">MITRE T1548 · Privilege Escalation</div>
+  </div>
+
+  <div class="sim-card" onclick="runSim('lateral_movement',this)">
+    <div class="sim-emoji">↔️</div>
+    <div class="sim-name">Lateral Movement</div>
+    <div class="sim-desc">Simulate one IP authenticating to 4+ different accounts — attacker pivoting through compromised credentials.</div>
+    <div class="sim-mitre">MITRE T1021 · Lateral Movement</div>
+  </div>
+
+  <div class="sim-card" onclick="runSim('data_exfiltration',this)">
+    <div class="sim-emoji">📤</div>
+    <div class="sim-name">Data Exfiltration</div>
+    <div class="sim-desc">Simulate large outbound data transfer — 5–10MB in 10 minutes matching exfil staging patterns.</div>
+    <div class="sim-mitre">MITRE T1041 · Exfiltration</div>
+  </div>
+
+  <div class="sim-card" onclick="runSim('mixed',this)" style="border-color:rgba(108,99,255,0.4);">
+    <div class="sim-emoji">🌪️</div>
+    <div class="sim-name">Full APT Simulation</div>
+    <div class="sim-desc">Simulate a multi-stage attack across all detection engines — reconnaissance, exploitation, persistence, exfil.</div>
+    <div class="sim-mitre">Multi-technique · All Tactics</div>
+  </div>
+
+</div>
+
+<!-- History -->
+<div class="panel" style="margin-top:24px;">
+  <div class="panel-head">
+    <div class="panel-title"><i class="fas fa-history"></i> Simulation History</div>
+  </div>
+  <div class="panel-body" id="sim-history">
+    <div class="empty-state"><i class="fas fa-flask"></i><p>No simulations run yet. Click any card above.</p></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block page_js %}
+<script>
+const history = [];
+
+async function runSim(type, card) {
+  card.classList.add('running');
+
+  const out = document.getElementById('sim-output');
+  const body = document.getElementById('sim-output-body');
+  out.style.display = 'block';
+  body.innerHTML = `<span style="color:var(--warn);font-family:var(--mono);">Running simulation: ${typeLabel(type)}...</span>`;
+
+  try {
+    const d = await fetch('/api/simulate', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({type})
+    }).then(r=>r.json());
+
+    body.innerHTML = `
+      <div style="display:flex;align-items:center;gap:16px;">
+        <span style="font-size:28px;">✅</span>
+        <div>
+          <div style="font-family:var(--display);font-size:16px;margin-bottom:4px;">${typeLabel(type)} — Complete</div>
+          <div style="font-family:var(--mono);font-size:12px;color:var(--muted);">
+            Alerts created: <span style="color:${d.alerts_created>0?'var(--danger)':'var(--success)'};">${d.alerts_created}</span>
+          </div>
+        </div>
+        <a href="/alerts" class="btn btn-primary" style="margin-left:auto;">View Alerts →</a>
+      </div>`;
+
+    toast(`${typeLabel(type)}: ${d.alerts_created} alert(s) generated`, d.alerts_created > 0 ? 'err' : 'ok');
+    history.unshift({type, alerts: d.alerts_created, time: new Date().toLocaleTimeString()});
+    renderHistory();
+  } catch(e) {
+    body.innerHTML = `<span style="color:var(--danger);">Error: ${e.message}</span>`;
+  }
+  card.classList.remove('running');
+}
+
+function renderHistory() {
+  const el = document.getElementById('sim-history');
+  if (!history.length) return;
+  el.innerHTML = history.slice(0,10).map(h => `
+    <div class="alert-row">
+      <div class="alert-icon-wrap icon-cyan"><i class="fas fa-flask"></i></div>
+      <div class="alert-info">
+        <div class="alert-tags"><span style="font-weight:600;">${typeLabel(h.type)}</span></div>
+        <div class="alert-meta">Alerts generated: <span style="color:${h.alerts>0?'var(--danger)':'var(--success)'};">${h.alerts}</span> · ${h.time}</div>
+      </div>
+    </div>`).join('');
+}
+</script>
+{% endblock %}

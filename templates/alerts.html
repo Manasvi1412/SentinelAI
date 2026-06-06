@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}Alerts{% endblock %}
+{% block page_title %}Alert Management{% endblock %}
+{% block page_sub %}Filter, investigate and resolve security alerts{% endblock %}
+{% set active = 'alerts' %}
+
+{% block content %}
+<!-- Filters + actions -->
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;gap:12px;flex-wrap:wrap;">
+  <div class="filter-bar">
+    <button class="filter-btn active" onclick="setFilter('all',this)">All</button>
+    <button class="filter-btn" onclick="setFilter('CRITICAL',this)">🔴 Critical</button>
+    <button class="filter-btn" onclick="setFilter('HIGH',this)">🟠 High</button>
+    <button class="filter-btn" onclick="setFilter('MEDIUM',this)">🔵 Medium</button>
+    <button class="filter-btn" onclick="setFilter('LOW',this)">🟢 Low</button>
+    <button class="filter-btn" id="resolved-toggle" onclick="toggleResolved()">Show Resolved</button>
+  </div>
+  <div style="display:flex;gap:8px;">
+    <button class="btn" onclick="selectAll()"><i class="fas fa-check-square"></i> Select All</button>
+    <button class="btn btn-resolve" onclick="bulkResolve()"><i class="fas fa-check-double"></i> Resolve Selected</button>
+  </div>
+</div>
+
+<!-- Alert count summary -->
+<div id="alert-summary" class="mb-4" style="font-size:12px;color:var(--muted);font-family:var(--mono);"></div>
+
+<!-- Alerts list -->
+<div class="panel">
+  <div class="panel-head">
+    <div class="panel-title"><i class="fas fa-bell"></i> Security Alerts</div>
+    <button class="btn-icon" onclick="loadAlerts()" title="Refresh"><i class="fas fa-sync-alt"></i></button>
+  </div>
+  <div class="panel-body" id="alerts-list">
+    <div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading alerts...</p></div>
+  </div>
+</div>
+
+<!-- AI Analysis Panel -->
+<div class="ai-panel" id="ai-panel">
+  <div class="ai-panel-header">
+    <span style="font-size:22px;">🤖</span>
+    <div>
+      <div style="font-family:var(--display);font-size:14px;font-weight:700;color:#9b93ff;">AI SOC Analyst</div>
+      <div style="font-size:10px;color:var(--muted);font-family:var(--mono);" id="ai-source-label">Rule-based analysis</div>
+    </div>
+    <button class="btn btn-sm" style="margin-left:auto;" onclick="document.getElementById('ai-panel').classList.remove('show')">✕ Close</button>
+  </div>
+  <div id="ai-content"></div>
+</div>
+{% endblock %}
+
+{% block page_js %}
+<script>
+let currentFilter = 'all';
+let showResolved = false;
+let selectedIds = new Set();
+
+function setFilter(f, btn) {
+  currentFilter = f;
+  document.querySelectorAll('.filter-btn').forEach(b => { if (!b.id) b.classList.remove('active'); });
+  btn.classList.add('active');
+  loadAlerts();
+}
+function toggleResolved() {
+  showResolved = !showResolved;
+  document.getElementById('resolved-toggle').classList.toggle('active', showResolved);
+  loadAlerts();
+}
+function selectAll() {
+  document.querySelectorAll('.alert-check').forEach(cb => { cb.checked = true; selectedIds.add(parseInt(cb.dataset.id)); });
+}
+
+async function bulkResolve() {
+  if (!selectedIds.size) { toast('No alerts selected', 'warn'); return; }
+  const ids = [...selectedIds];
+  await fetch('/api/alerts/bulk-resolve', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ids}) });
+  toast(`${ids.length} alert(s) resolved`, 'ok');
+  selectedIds.clear();
+  loadAlerts();
+}
+
+async function loadAlerts() {
+  let url = `/api/alerts?resolved=${showResolved}&limit=200`;
+  if (currentFilter !== 'all') url += `&severity=${currentFilter}`;
+  const alerts = await fetch(url).then(r=>r.json());
+
+  document.getElementById('alert-summary').textContent =
+    `Showing ${alerts.length} ${showResolved?'resolved':'active'} alert(s)${currentFilter!=='all'?' — '+currentFilter+' severity only':''}`;
+
+  const el = document.getElementById('alerts-list');
+  if (!alerts.length) {
+    el.innerHTML = '<div class="empty-state"><i class="fas fa-shield-alt"></i><p>No alerts match the current filter.</p></div>';
+    return;
+  }
+
+  el.innerHTML = alerts.map(a => `
+    <div class="alert-row" id="arow-${a.id}">
+      <input type="checkbox" class="alert-check" data-id="${a.id}"
+        style="margin-top:4px;accent-color:var(--accent);"
+        onchange="selectedIds[this.checked?'add':'delete'](parseInt(this.dataset.id))">
+      ${alertIcon(a.alert_type)}
+      <div class="alert-info">
+        <div class="alert-tags">
+          ${sevBadge(a.severity)}
+          <span style="font-size:12px;font-weight:600;color:var(--text);">${typeLabel(a.alert_type)}</span>
+          ${mitreB(a.mitre_id, a.mitre_technique)}
+          ${a.resolved ? '<span style="color:var(--success);font-size:10px;font-family:var(--mono);">✓ RESOLVED</span>' : ''}
+        </div>
+        <div class="alert-desc">${a.description}</div>
+        <div class="alert-meta">
+          <span class="mono" style="color:var(--accent);">${a.source_ip}</span>
+          &nbsp;·&nbsp; ${a.timestamp}
+          ${a.tactic ? `&nbsp;·&nbsp; <span style="color:#9b93ff;">${a.tactic}</span>` : ''}
+        </div>
+      </div>
+      <div class="alert-actions">
+        ${!a.resolved ? `<button class="btn btn-sm btn-resolve" onclick="resolveOne(${a.id})"><i class="fas fa-check"></i> Resolve</button>` : ''}
+        <button class="btn btn-sm btn-analyze" onclick="analyzeAlert(${a.id})"><i class="fas fa-robot"></i> Analyze</button>
+      </div>
+    </div>`).join('');
+}
+
+async function resolveOne(id) {
+  await fetch(`/api/alerts/${id}/resolve`, {method:'POST'});
+  document.getElementById(`arow-${id}`)?.remove();
+  toast('Alert resolved', 'ok');
+  updateSidebarBadge();
+}
+
+async function analyzeAlert(id) {
+  const panel = document.getElementById('ai-panel');
+  const content = document.getElementById('ai-content');
+  panel.classList.add('show');
+  content.innerHTML = '<div style="text-align:center;padding:20px;color:var(--muted)"><i class="fas fa-circle-notch fa-spin" style="font-size:24px;margin-bottom:12px;display:block;"></i>Analyzing incident with AI...</div>';
+  panel.scrollIntoView({behavior:'smooth', block:'nearest'});
+
+  const d = await fetch(`/api/alerts/${id}/analyze`).then(r=>r.json());
+  document.getElementById('ai-source-label').textContent = d.source === 'groq' ? '✦ Powered by Groq · llama-3.3-70b' : d.source === 'gemini' ? '✦ Powered by Google Gemini' : 'Rule-based analysis';
+
+  content.innerHTML = `
+    <div class="ai-label">Incident Summary</div>
+    <div class="ai-value">${d.summary}</div>
+    <div class="ai-label">Risk Assessment</div>
+    <div class="ai-value" style="color:var(--warn);">${d.risk}</div>
+    <div class="ai-label" style="margin-bottom:10px;">Recommended Actions</div>
+    <div style="margin-bottom:16px;">
+      ${d.actions.map((a,i)=>`
+        <div class="ai-action">
+          <span class="ai-action-num">${i+1}</span>
+          <span>${a}</span>
+        </div>`).join('')}
+    </div>
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+      <span class="mitre-badge">${d.mitre_id} · ${d.tactic||''}</span>
+      <span style="font-size:10px;color:var(--muted);font-family:var(--mono);">Confidence: ${d.confidence||'N/A'}</span>
+      <a href="${d.mitre_url}" target="_blank" style="font-size:11px;color:#9b93ff;margin-left:auto;">View MITRE ATT&CK →</a>
+    </div>`;
+}
+
+loadAlerts();
+setInterval(loadAlerts, 20000);
+</script>
+{% endblock %}

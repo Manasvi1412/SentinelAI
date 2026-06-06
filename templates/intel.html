@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}Threat Intel{% endblock %}
+{% block page_title %}Threat Intelligence{% endblock %}
+{% block page_sub %}VirusTotal + AbuseIPDB dual-source IP enrichment{% endblock %}
+{% set active = 'intel' %}
+
+{% block content %}
+<!-- Lookup panel -->
+<div class="panel mb-4">
+  <div class="panel-head">
+    <div class="panel-title"><i class="fas fa-search"></i> IP Reputation Lookup</div>
+  </div>
+  <div class="panel-body">
+    <div class="input-row" style="max-width:600px;margin-bottom:16px;">
+      <input type="text" class="inp" id="ip-input" placeholder="Enter IP address e.g. 45.33.32.156" onkeydown="if(event.key==='Enter')lookupIP()">
+      <button class="btn btn-primary" onclick="lookupIP()"><i class="fas fa-search"></i> Check IP</button>
+    </div>
+    <div id="lookup-result" style="display:none;"></div>
+  </div>
+</div>
+
+<!-- Intel table -->
+<div class="panel">
+  <div class="panel-head">
+    <div class="panel-title"><i class="fas fa-table"></i> Checked IPs History</div>
+    <button class="btn-icon" onclick="loadTable()"><i class="fas fa-sync-alt"></i></button>
+  </div>
+  <div class="panel-body" style="padding:0;">
+    <table class="tbl">
+      <thead>
+        <tr>
+          <th>IP Address</th>
+          <th>Verdict</th>
+          <th>Score</th>
+          <th>VT Votes</th>
+          <th>Abuse Score</th>
+          <th>Country</th>
+          <th>ISP</th>
+          <th>Source</th>
+          <th>Checked</th>
+        </tr>
+      </thead>
+      <tbody id="intel-tbody">
+        <tr><td colspan="9" style="text-align:center;padding:40px;color:var(--muted);">No IPs checked yet.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block page_js %}
+<script>
+async function lookupIP() {
+  const ip = document.getElementById('ip-input').value.trim();
+  if (!ip) return;
+  const res = document.getElementById('lookup-result');
+  res.style.display = 'block';
+  res.innerHTML = '<span style="color:var(--muted);font-family:var(--mono);">Checking ' + ip + ' against VirusTotal + AbuseIPDB...</span>';
+
+  const d = await fetch(`/api/intel/${ip}`).then(r=>r.json());
+  const bad = d.malicious;
+  res.innerHTML = `
+    <div style="background:${bad?'rgba(255,61,90,0.08)':'rgba(0,214,143,0.07)'};border:1px solid ${bad?'rgba(255,61,90,0.3)':'rgba(0,214,143,0.25)'};border-radius:10px;padding:18px;">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
+        <span style="font-size:28px;">${bad?'🔴':'🟢'}</span>
+        <div>
+          <div style="font-family:var(--display);font-size:18px;color:${bad?'var(--danger)':'var(--success)'};">${bad?'MALICIOUS':'CLEAN'}</div>
+          <div style="font-family:var(--mono);font-size:12px;color:var(--muted);">${ip}</div>
+        </div>
+        <div style="margin-left:auto;text-align:right;">
+          <div style="font-size:28px;font-family:var(--display);color:${bad?'var(--danger)':'var(--success)'};">${d.score}</div>
+          <div style="font-size:10px;color:var(--muted);">Threat Score</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;font-size:12px;">
+        <div><div style="color:var(--muted);font-size:10px;margin-bottom:3px;font-family:var(--mono);">VT VOTES</div><div class="mono">${d.vt_votes}</div></div>
+        <div><div style="color:var(--muted);font-size:10px;margin-bottom:3px;font-family:var(--mono);">ABUSE SCORE</div><div class="mono">${d.abuse_score}</div></div>
+        <div><div style="color:var(--muted);font-size:10px;margin-bottom:3px;font-family:var(--mono);">COUNTRY</div><div class="mono">${d.country||'—'}</div></div>
+        <div><div style="color:var(--muted);font-size:10px;margin-bottom:3px;font-family:var(--mono);">SOURCE</div><div class="mono">${d.source}</div></div>
+      </div>
+    </div>`;
+  loadTable();
+}
+
+async function loadTable() {
+  const records = await fetch('/api/intel/all').then(r=>r.json());
+  const tbody = document.getElementById('intel-tbody');
+  if (!records.length) return;
+  tbody.innerHTML = records.map(r => `
+    <tr>
+      <td class="tbl-mono" style="color:var(--accent);">${r.ip_address}</td>
+      <td>${r.is_malicious ? '<span class="sev sev-CRITICAL">MALICIOUS</span>' : '<span class="sev sev-LOW">CLEAN</span>'}</td>
+      <td class="tbl-mono" style="color:${r.reputation_score>50?'var(--danger)':r.reputation_score>20?'var(--warn)':'var(--success)'};">${r.reputation_score}</td>
+      <td class="tbl-mono">${r.vt_votes??'—'}</td>
+      <td class="tbl-mono">${r.abuse_score??'—'}</td>
+      <td class="tbl-mono">${r.country||'—'}</td>
+      <td style="font-size:11px;color:var(--muted);">${r.isp||'—'}</td>
+      <td class="tbl-mono" style="font-size:11px;color:var(--muted);">${r.source}</td>
+      <td class="tbl-mono" style="font-size:11px;color:var(--muted2);">${r.last_checked}</td>
+    </tr>`).join('');
+}
+
+loadTable();
+</script>
+{% endblock %}

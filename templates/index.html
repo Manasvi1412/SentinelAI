@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+{% block title %}Overview{% endblock %}
+{% block page_title %}Security Overview{% endblock %}
+{% block page_sub %}Real-time threat monitoring dashboard{% endblock %}
+{% block extra_head %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<!-- Stat Cards -->
+<div class="stat-grid mb-4">
+  <div class="stat-card c-blue">
+    <i class="fas fa-database stat-icon"></i>
+    <div class="stat-val" id="s-logs">—</div>
+    <div class="stat-label">Total Logs</div>
+  </div>
+  <div class="stat-card c-warn">
+    <i class="fas fa-bell stat-icon"></i>
+    <div class="stat-val" id="s-alerts">—</div>
+    <div class="stat-label">Active Alerts</div>
+  </div>
+  <div class="stat-card c-red">
+    <i class="fas fa-skull-crossbones stat-icon"></i>
+    <div class="stat-val" id="s-critical">—</div>
+    <div class="stat-label">Critical</div>
+  </div>
+  <div class="stat-card c-green">
+    <i class="fas fa-clock stat-icon"></i>
+    <div class="stat-val" id="s-recent">—</div>
+    <div class="stat-label">Events (1h)</div>
+  </div>
+</div>
+
+<!-- Main row -->
+<div class="row7_3 mb-4">
+  <!-- Recent Alerts -->
+  <div class="panel">
+    <div class="panel-head">
+      <div class="panel-title"><i class="fas fa-bell"></i> Recent Threats</div>
+      <a href="/alerts" class="btn btn-sm">View All →</a>
+    </div>
+    <div class="panel-body" id="recent-alerts">
+      <div class="empty-state"><i class="fas fa-shield-alt"></i><p>No active threats. Try simulating an attack.</p></div>
+    </div>
+  </div>
+
+  <!-- Severity donut -->
+  <div class="panel">
+    <div class="panel-head">
+      <div class="panel-title"><i class="fas fa-chart-pie"></i> By Severity</div>
+    </div>
+    <div class="panel-body" style="display:flex;flex-direction:column;align-items:center;gap:16px;">
+      <canvas id="sevChart" width="160" height="160"></canvas>
+      <div id="sev-legend" style="width:100%;font-size:12px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Attack types + Log preview -->
+<div class="row2">
+  <div class="panel">
+    <div class="panel-head">
+      <div class="panel-title"><i class="fas fa-chart-bar"></i> Attack Distribution</div>
+    </div>
+    <div class="panel-body">
+      <canvas id="typeChart" height="180"></canvas>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-head">
+      <div class="panel-title"><i class="fas fa-stream"></i> Live Log Stream</div>
+      <a href="/logs" class="btn btn-sm">Full View →</a>
+    </div>
+    <div class="panel-body" id="log-preview" style="max-height:220px;overflow:auto;"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block page_js %}
+<script>
+let sevChart, typeChart;
+
+async function loadStats() {
+  const d = await fetch('/api/stats').then(r=>r.json());
+  document.getElementById('s-logs').textContent = d.total_logs;
+  document.getElementById('s-alerts').textContent = d.total_alerts;
+  document.getElementById('s-critical').textContent = d.critical_alerts;
+  document.getElementById('s-recent').textContent = d.recent_logs;
+}
+
+async function loadAlerts() {
+  const alerts = await fetch('/api/alerts').then(r=>r.json());
+  const el = document.getElementById('recent-alerts');
+  if (!alerts.length) return;
+  el.innerHTML = alerts.slice(0,6).map(a => `
+    <div class="alert-row">
+      ${alertIcon(a.alert_type)}
+      <div class="alert-info">
+        <div class="alert-tags">${sevBadge(a.severity)} ${mitreB(a.mitre_id, a.mitre_technique)}</div>
+        <div class="alert-desc">${a.description}</div>
+        <div class="alert-meta">${a.source_ip} · ${a.timestamp}</div>
+      </div>
+    </div>`).join('');
+
+  // Severity donut
+  const counts = {CRITICAL:0,HIGH:0,MEDIUM:0,LOW:0};
+  alerts.forEach(a => { if(counts[a.severity]!==undefined) counts[a.severity]++; });
+  drawSevChart(counts);
+
+  // Attack type bar
+  const typeCounts = {};
+  alerts.forEach(a => { typeCounts[a.alert_type] = (typeCounts[a.alert_type]||0)+1; });
+  drawTypeChart(typeCounts);
+}
+
+function drawSevChart(counts) {
+  const ctx = document.getElementById('sevChart').getContext('2d');
+  if (sevChart) sevChart.destroy();
+  const vals = [counts.CRITICAL, counts.HIGH, counts.MEDIUM, counts.LOW];
+  sevChart = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Critical','High','Medium','Low'],
+      datasets: [{
+        data: vals,
+        backgroundColor: ['rgba(255,61,90,0.8)','rgba(255,176,32,0.8)','rgba(0,229,255,0.7)','rgba(0,214,143,0.7)'],
+        borderColor: ['#ff3d5a','#ffb020','#00e5ff','#00d68f'],
+        borderWidth: 1
+      }]
+    },
+    options: { cutout:'70%', plugins:{legend:{display:false}}, animation:{duration:600} }
+  });
+  const colours = ['#ff3d5a','#ffb020','#00e5ff','#00d68f'];
+  document.getElementById('sev-legend').innerHTML = ['Critical','High','Medium','Low'].map((l,i)=>`
+    <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid rgba(30,42,56,0.6);">
+      <span style="color:${colours[i]};font-family:var(--mono);font-size:11px;">● ${l}</span>
+      <span style="font-family:var(--mono);font-size:11px;">${vals[i]}</span>
+    </div>`).join('');
+}
+
+function drawTypeChart(typeCounts) {
+  const ctx = document.getElementById('typeChart').getContext('2d');
+  if (typeChart) typeChart.destroy();
+  const labels = Object.keys(typeCounts).map(t=>typeLabel(t));
+  const vals   = Object.values(typeCounts);
+  typeChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        data: vals,
+        backgroundColor: 'rgba(0,229,255,0.15)',
+        borderColor: 'rgba(0,229,255,0.7)',
+        borderWidth: 1,
+        borderRadius: 4
+      }]
+    },
+    options: {
+      plugins:{legend:{display:false}},
+      scales:{
+        x:{ticks:{color:'#6b7a8d',font:{size:10}},grid:{color:'rgba(30,42,56,0.6)'}},
+        y:{ticks:{color:'#6b7a8d',font:{size:10},stepSize:1},grid:{color:'rgba(30,42,56,0.6)'}}
+      },
+      animation:{duration:600}
+    }
+  });
+}
+
+async function loadLogPreview() {
+  const logs = await fetch('/api/logs?limit=15').then(r=>r.json());
+  const el = document.getElementById('log-preview');
+  if (!logs.length) { el.innerHTML = '<div class="empty-state" style="padding:20px"><i class="fas fa-stream"></i><p>No logs yet</p></div>'; return; }
+  el.innerHTML = logs.map(l=>`
+    <div class="log-line">
+      <span class="log-ip">${l.source_ip}</span>
+      <span class="log-type">${l.event_type}</span>
+      <span class="log-user">${l.username||'-'}</span>
+      <span class="${l.status==='success'?'log-ok':'log-fail'}">${l.status.toUpperCase()}</span>
+      <span class="log-time">${l.timestamp.split(' ')[1]}</span>
+    </div>`).join('');
+}
+
+function refresh() { loadStats(); loadAlerts(); loadLogPreview(); }
+refresh();
+setInterval(refresh, 10000);
+</script>
+{% endblock %}
